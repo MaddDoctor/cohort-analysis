@@ -1,0 +1,49 @@
+WITH 
+first_open AS (
+    SELECT DATE(TIMESTAMP_MICROS(event_timestamp),"Asia/Jakarta") as first_open_dt, 
+           user_pseudo_id
+      FROM `firebase-public-project.analytics_153293282.events_*`
+     WHERE event_name = "first_open" 
+       AND device.operating_system = "ANDROID"
+), app_remove as (
+    SELECT DATE(TIMESTAMP_MICROS(event_timestamp),"Asia/Jakarta") as remove_dt, 
+           user_pseudo_id
+      FROM `firebase-public-project.analytics_153293282.events_*`
+     WHERE event_name = "app_remove" 
+       AND device.operating_system = "ANDROID"
+), cohort_size AS (
+    SELECT first_open_dt, 
+           days,
+           COUNT(DISTINCT first_open.user_pseudo_id) as size
+      FROM first_open, UNNEST(GENERATE_ARRAY(0,30)) days
+  GROUP BY 1,2
+), removal AS (
+    SELECT first_open.first_open_dt as first_open_dt, 
+           DATE_DIFF(app_remove.remove_dt, first_open.first_open_dt, DAY) as remove_days, 
+           COUNT(DISTINCT app_remove.user_pseudo_id) as removed
+      FROM first_open
+ LEFT JOIN app_remove
+        ON first_open.user_pseudo_id = app_remove.user_pseudo_id
+  GROUP BY 1,2
+), cohorted AS ( 
+    SELECT cohort_size.first_open_dt, 
+           days, 
+           size, 
+           removed
+      FROM cohort_size
+ LEFT JOIN removal 
+        ON cohort_size.first_open_dt = removal.first_open_dt
+       AND cohort_size.days = removal.remove_days
+), cmltv AS (
+    SELECT *, 
+           SUM(removed) OVER (PARTITION BY first_open_dt
+                                     ORDER BY days 
+                                     ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as cumulative_remove 
+      FROM cohorted
+) 
+SELECT first_open_dt,
+       days,
+       size,
+       cumulative_remove,
+       ROUND(cumulative_remove/size,3) as cum_remove_rate
+  FROM cmltv
